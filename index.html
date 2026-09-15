@@ -1,14 +1,100 @@
-<html>
-  <head>
-    <script src="https://aframe.io/releases/1.8.0/aframe.min.js"></script>
-      </head>
-  <body>
-<a-scene>
-  <a-assets>
-    <a-asset-item id="road" src="road.glb"></a-asset-item>
-  </a-assets>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Floating Street</title>
+  <script src="https://aframe.io/releases/1.8.0/aframe.min.js"></script>
+  <script>
+    AFRAME.registerComponent('floating-particles', {
+      init: function () {
+        this.particles = [];
+        this.finished = false;
+        for (let i = 0; i < 90; i++) {
+          const p = document.createElement('a-sphere');
+          const progress = i / 89;
+          const x = (Math.random() - 0.5) * (2.2 + progress * 2);
+          const y = 0.15 + Math.random() * 1.2;
+          const z = -1.5 - progress * 19;
+          const radius = 0.025 + Math.random() * 0.045;
+          p.setAttribute('radius', radius);
+          p.setAttribute('position', {x, y, z});
+          p.setAttribute('material', {
+            color: i % 4 === 0 ? '#fff0b8' : '#ffc55c',
+            emissive: '#d77820',
+            emissiveIntensity: 0.7,
+            transparent: true,
+            opacity: 0.72,
+            shader: 'standard'
+          });
+          p.dataset.baseX = x;
+          p.dataset.baseY = y;
+          p.dataset.baseZ = z;
+          p.dataset.phase = Math.random() * Math.PI * 2;
+          this.el.appendChild(p);
+          this.particles.push(p);
+        }
+      },
+      tick: function (time) {
+        const camera = document.querySelector('#camera');
+        if (!camera) return;
+        const cp = new THREE.Vector3();
+        camera.object3D.getWorldPosition(cp);
+        const seconds = time / 1000;
+        this.particles.forEach((p, i) => {
+          const bx = Number(p.dataset.baseX);
+          const by = Number(p.dataset.baseY);
+          const bz = Number(p.dataset.baseZ);
+          const phase = Number(p.dataset.phase);
+          const dx = cp.x - bx;
+          const dz = cp.z - bz;
+          const distance = Math.sqrt(dx * dx + dz * dz);
+          let spread = 0;
+          if (distance < 2.5) spread = (2.5 - distance) * Math.sign(bx - cp.x || 1) * 0.45;
+          const pulse = 0.70 + 0.25 * Math.sin(seconds * 2.2 + i * 0.35);
+          p.object3D.position.set(
+            bx + spread + Math.sin(seconds * 0.7 + phase) * 0.08,
+            by + Math.sin(seconds * 1.25 + phase) * 0.12,
+            bz
+          );
+          p.setAttribute('material', 'opacity', distance < 2.5 ? Math.min(1, pulse + 0.2) : pulse);
+          const finalZone = cp.z < -17;
+          if (finalZone) {
+            p.object3D.position.y += Math.max(0, (i / 90) * 2.8 + Math.sin(seconds + phase) * 0.35);
+            p.object3D.scale.setScalar(1.25);
+          } else {
+            p.object3D.scale.setScalar(1);
+          }
+        });
+      }
+    });
+  </script>
+</head>
+<body>
+  <a-scene background="color: #10191c" fog="type: exponential; color: #10191c; density: 0.018">
+    <a-assets>
+      <a-asset-item id="road" src="road.glb"></a-asset-item>
+    </a-assets>
 
-  <a-entity gltf-model="#road"></a-entity>
-</a-scene>
-  </body>
+    <a-entity gltf-model="#road"></a-entity>
+    <a-entity floating-particles></a-entity>
+
+    <a-entity light="type: ambient; color: #8da6ad; intensity: 0.65"></a-entity>
+    <a-entity light="type: directional; color: #ffd7a0; intensity: 1.1"
+              position="-35 -20 0"></a-entity>
+
+    <a-entity id="rig" position="0 0 1">
+      <a-camera id="camera" position="0 1.65 0"
+                wasd-controls="acceleration: 18"
+                look-controls>
+        <a-cursor color="#ffd27a" opacity="0.65"></a-cursor>
+      </a-camera>
+    </a-entity>
+
+    <a-text value="Follow the light" position="-0.9 2.2 -3"
+            color="#ffe2a3" width="4"
+            animation="property: material.opacity; from: 0.3; to: 1; dur: 1400; dir: alternate; loop: true">
+    </a-text>
+  </a-scene>
+</body>
 </html>
