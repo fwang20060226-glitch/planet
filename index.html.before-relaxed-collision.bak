@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Street Walk</title>
+  <script src="https://aframe.io/releases/1.8.0/aframe.min.js"></script>
+  <script>
+// One hollow rectangular enclosure. Nothing inside it blocks movement.
+function clampToEnclosure(position, bounds) {
+  return {
+    x: Math.max(bounds.minX, Math.min(bounds.maxX, position.x)),
+    y: Math.max(bounds.minY, Math.min(bounds.maxY, position.y)),
+    z: Math.max(bounds.minZ, Math.min(bounds.maxZ, position.z))
+  };
+}
+AFRAME.registerComponent('box-boundary', {
+  schema: {
+    minX: {default: -20.2}, maxX: {default: 10.6},
+    minY: {default: -1.8}, maxY: {default: 4},
+    minZ: {default: -1.5}, maxZ: {default: 6.4}
+  },
+  init: function () {
+    this.world = new AFRAME.THREE.Vector3();
+  },
+  tock: function () {
+    const player = this.el.object3D;
+    player.updateWorldMatrix(true, false);
+    player.getWorldPosition(this.world);
+    const corrected = clampToEnclosure(this.world, this.data);
+    if (corrected.x === this.world.x && corrected.y === this.world.y && corrected.z === this.world.z) return;
+    this.world.set(corrected.x, corrected.y, corrected.z);
+    if (player.parent) player.parent.worldToLocal(this.world);
+    player.position.copy(this.world);
+    player.updateMatrixWorld(true);
+  }
+});
+</script>
+<script>
+  AFRAME.registerComponent('road-particles', {
+    schema: {
+      startX: { default: -19 },
+      startZ: { default: 2 },
+      groundY: { default: 0.05 },
+      length: { default: 25 },
+      width: { default: 3 },
+      count: { default: 3000 },
+      collectRadius: { default: 2.3 }
+    },
+
+    init: function () {
+      const THREE = AFRAME.THREE;
+      const count = this.data.count;
+
+      this.playerPosition = new THREE.Vector3();
+      this.remaining = count;
+      this.finished = false;
+      this.particles = [];
+
+      this.positions = new Float32Array(count * 3);
+      this.colors = new Float32Array(count * 3);
+      this.sizes = new Float32Array(count);
+      this.alphas = new Float32Array(count);
+      this.palette = ['#EEE5D3', '#D8D2B9', '#A2B6A0', '#B9B79C', '#C49A86', '#E2BA9B']
+        .map(hex => new THREE.Color(hex));
+      this.gradientColor = new THREE.Color();
+      this.colorProgress = 0;
+
+      // 柔和的圆形光点贴图。
+      const canvas = document.createElement('canvas');
+      canvas.width = 64;
+      canvas.height = 64;
+
+      const ctx = canvas.getContext('2d');
+      const glow = ctx.createRadialGradient(
+        32, 32, 0,
+        32, 32, 32
+      );
+
+      glow.addColorStop(0, 'rgba(255,255,255,1)');
+      glow.addColorStop(0.3, 'rgba(255,255,255,0.95)');
+      glow.addColorStop(0.65, 'rgba(255,255,255,0.25)');
+      glow.addColorStop(1, 'rgba(255,255,255,0)');
+
+      ctx.fillStyle = glow;
+      ctx.fillRect(0, 0, 64, 64);
+
+      this.texture = new THREE.CanvasTexture(canvas);
+
+      for (let i = 0; i < count; i++) {
+        const sample = i / Math.max(1, count - 1);
+        // Smoothly increase density along the route: the end is 5x denser.
+        // Inverse CDF of density proportional to (1 + 4 * progress).
+        const progress = (Math.sqrt(1 + 24 * sample) - 1) / 4;
+
+        this.particles.push({
+          // 从玩家前方开始，沿 X 正方向延伸。
+          x: this.data.startX + 3 + progress * this.data.length,
+          // Fill the air from near the scanned pavement up through eye level.
+          // World-space Y; retain clearance for the 0.12-unit vertical drift.
+          y: -1.1 + Math.random() * 2.3,
+          z: this.data.startZ +
+             (Math.random() - 0.5) * this.data.width,
+          phase: Math.random() * Math.PI * 2,
+          collected: false,
+          fade: 1
+        });
+
+        const p = this.particles[i];
+        // Persistent variation keeps neighbouring particles from becoming identical.
+        p.colorOffset = (Math.random() - 0.5) * 0.24;
+        const color = this.palette[0];
+        this.colors.set([color.r, color.g, color.b], i * 3);
+        this.sizes[i] = (0.035 + Math.random() * 0.035) / 0.05;
+        this.alphas[i] = 1;
+        this.positions[i * 3] = p.x;
+        this.positions[i * 3 + 1] = p.y;
+        this.positions[i * 3 + 2] = p.z;
+      }
+
+      this.geometry = new THREE.BufferGeometry();
+
+      this.geometry.setAttribute(
+        'position',
+        new THREE.BufferAttribute(this.positions, 3)
+          .setUsage(THREE.DynamicDrawUsage)
+      );
+
+      this.geometry.setAttribute(
+        'color',
+        new THREE.BufferAttribute(this.colors, 3)
+          .setUsage(THREE.DynamicDrawUsage)
+      );
+
+      this.geometry.setAttribute('particleSize', new THREE.BufferAttribute(this.sizes, 1));
+      this.geometry.setAttribute('particleAlpha', new THREE.BufferAttribute(this.alphas, 1)
+        .setUsage(THREE.DynamicDrawUsage));
+
+      this.material = new THREE.PointsMaterial({
+        size: 0.05,
+        map: this.texture,
+        transparent: true,
+        opacity: 1,
+        vertexColors: true,
+        blending: THREE.NormalBlending,
+        depthWrite: false,
+        sizeAttenuation: true
+      });
+
+      // Retain PointsMaterial's perspective sizing and color management, with
+      // individual sizes and alpha so collected points fade without turning black.
+      this.material.onBeforeCompile = shader => {
+        shader.vertexShader = 'attribute float particleSize; attribute float particleAlpha; varying float vParticleAlpha;\n' + shader.vertexShader;
+        shader.vertexShader = shader.vertexShader.replace('gl_PointSize = size;',
+          'gl_PointSize = size * particleSize; vParticleAlpha = particleAlpha;');
+        shader.fragmentShader = 'varying float vParticleAlpha;\n' + shader.fragmentShader;
+        shader.fragmentShader = shader.fragmentShader.replace('#include <premultiplied_alpha_fragment>',
+          'gl_FragColor.a *= vParticleAlpha;\n#include <premultiplied_alpha_fragment>');
+      };
+      this.material.customProgramCacheKey = () => 'street-particles-soft-v1';
+
+      this.points = new THREE.Points(
+        this.geometry,
+        this.material
+      );
+
+      this.points.frustumCulled = false;
+      this.el.setObject3D('particles', this.points);
+
+      // Show guidance first, then replace it with the completion message.
+      this.message = document.createElement('div');
+      this.message.textContent = 'Follow the floating particles';
+      this.message.setAttribute('role', 'status');
+
+      this.message.style.cssText = `
+        position: fixed;
+        left: 50%;
+        top: 12%;
+        transform: translate(-50%, -50%);
+        padding: 18px 30px;
+        border-radius: 16px;
+        background: transparent;
+        color: #000000;
+        font-family: Arial, sans-serif;
+        font-size: 26px;
+        letter-spacing: 0.5px; font-weight: 500; width: 85%; box-sizing: border-box; text-shadow: 0 1px 4px rgba(255,255,255,0.85);
+        text-align: center;
+        opacity: 1;
+        transition: opacity 1.5s ease;
+        pointer-events: none;
+        z-index: 1000;
+      `;
+
+      document.body.appendChild(this.message);
+    },
+
+    tick: function (time, delta) {
+      if (this.finished) return;
+
+      const camera = document.querySelector('#camera');
+      if (!camera) return;
+
+      camera.object3D.updateWorldMatrix(true, false);
+      camera.object3D.getWorldPosition(this.playerPosition);
+
+      // 转入粒子所在实体的坐标系。
+      this.el.object3D.updateWorldMatrix(true, false);
+      this.el.object3D.worldToLocal(this.playerPosition);
+
+      const seconds = time / 1000;
+      const dt = Math.min(delta || 0, 100) / 1000;
+      // Position-driven gradient, smoothed over time; walking back reverses it.
+      const routeProgress = Math.max(0, Math.min(1,
+        (this.playerPosition.x - this.data.startX) / (this.data.length + 3)));
+      this.colorProgress += (routeProgress - this.colorProgress) * (1 - Math.exp(-dt * 3));
+      let stillVisible = false;
+
+      this.particles.forEach((p, i) => {
+        const index = i * 3;
+
+        if (!p.collected) {
+          const dx = this.playerPosition.x - p.x;
+          const dz = this.playerPosition.z - p.z;
+          const distance = Math.hypot(dx, dz);
+
+          if (distance < this.data.collectRadius) {
+            p.collected = true;
+            this.remaining--;
+          }
+        }
+
+        // 收集后稍微升起，并在约半秒内消散。
+        if (p.collected) {
+          p.fade = Math.max(0, p.fade - dt * 2);
+        }
+
+        if (p.fade > 0) {
+          stillVisible = true;
+        }
+
+        this.positions[index] =
+          p.x + Math.sin(seconds * 0.5 + p.phase) * 0.08;
+
+        this.positions[index + 1] =
+          p.y +
+          Math.sin(seconds * 1.2 + p.phase) * 0.12 +
+          (1 - p.fade) * 0.4;
+
+        this.positions[index + 2] =
+          p.z + Math.cos(seconds * 0.6 + p.phase) * 0.08;
+
+        const shimmer =
+          0.93 + Math.sin(seconds * 1.5 + p.phase) * 0.07;
+
+        const brightness = shimmer * p.fade;
+
+        // Blend a six-color palette using actual player position and each point's tint.
+        const colorT = Math.max(0, Math.min(1, this.colorProgress + p.colorOffset));
+        const palettePosition = colorT * (this.palette.length - 1);
+        const paletteIndex = Math.min(this.palette.length - 2, Math.floor(palettePosition));
+        const blend = palettePosition - paletteIndex;
+        this.gradientColor.copy(this.palette[paletteIndex])
+          .lerp(this.palette[paletteIndex + 1], blend * blend * (3 - 2 * blend));
+        this.colors[index] = this.gradientColor.r;
+        this.colors[index + 1] = this.gradientColor.g;
+        this.colors[index + 2] = this.gradientColor.b;
+        // Collection still fades alpha, independently of the changing hue.
+        this.alphas[i] = brightness;
+      });
+
+      this.geometry.attributes.position.needsUpdate = true;
+      this.geometry.attributes.particleAlpha.needsUpdate = true;
+      this.geometry.attributes.color.needsUpdate = true;
+
+      // 等最后一颗粒子也消散后，才结束体验。
+      if (this.remaining === 0 && !stillVisible) {
+        this.finished = true;
+        this.points.visible = false;
+        this.message.textContent = 'Experience complete. Thank you!';
+          this.message.style.top = '45%';
+
+        this.el.sceneEl.emit('experience-complete');
+      }
+    },
+
+    remove: function () {
+      this.el.removeObject3D('particles');
+      this.geometry?.dispose();
+      this.material?.dispose();
+      this.texture?.dispose();
+      this.message?.remove();
+    }
+  });
+</script>
+</head>
+<body>
+  <a-scene background="color: #B8B3A9">
+    <a-assets>
+      <a-asset-item id="road" src="road2.glb"></a-asset-item>
+    </a-assets>
+    <a-entity gltf-model="#road"></a-entity>
+
+    <a-entity light="type: hemisphere; color: #ffffff; groundColor: #b8b0a2; intensity: 1"></a-entity>
+    <a-entity light="type: directional; color: #fff5e6; intensity: 0.8" position="-3 8 5"></a-entity>
+    <a-entity id="right-sun-target" position="-14 0.05 2"></a-entity>
+    <a-entity id="right-sun" light="type: directional; color: #fff1d6; intensity: 0.7; target: #right-sun-target" position="-14 8 14"></a-entity>
+
+<!-- Preserved starting position and direction. -->
+    <a-entity id="rig" position="-9 0.05 12" rotation="0 -90 0">
+      <a-camera id="camera" position="-10 0.45 10"
+        wasd-controls="acceleration: 12" look-controls box-boundary></a-camera>
+    </a-entity>
+
+    <!-- The scanned model ends near X=10.75; particles stop at X=9. -->
+    <a-entity id="road-particle-trail"
+      road-particles="startX: -19; startZ: 2; groundY: 0.05; length: 25; width: 3; count: 3000; collectRadius: 2.3">
+    </a-entity>
+  </a-scene>
+</body>
+</html>
