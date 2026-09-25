@@ -1,0 +1,100 @@
+// Preserve A-Frame's movement behavior, but integrate long frames in small steps.
+AFRAME.registerComponent('steady-walk', {
+  dependencies: ['wasd-controls'],
+  init: function () {
+    const movement = this.el.components['wasd-controls'];
+    this.movement = movement; this.originalTick = movement.tick;
+    const original = this.originalTick;
+    movement.tick = function (time, delta) {
+      if (!this.data.enabled) { this.velocity.set(0, 0, 0); return; }
+      let remaining = Math.min(Math.max(delta || 0, 0), 250);
+      while (remaining > 0) { const step = Math.min(remaining, 50); original.call(this, time, step); remaining -= step; }
+    };
+    this.onKey = event => {
+      if (!['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(event.code)) return;
+      if (event.type === 'keyup') { delete movement.keys[event.code]; return; }
+      if (!movement.data.enabled || event.ctrlKey || event.metaKey || event.altKey || event.target?.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(event.target?.tagName || '')) return;
+      movement.keys[event.code] = true;
+      event.preventDefault();
+    };
+    this.clearKeys = () => { movement.keys = {}; movement.velocity.set(0,0,0); };
+    window.addEventListener('keydown', this.onKey);
+    window.addEventListener('keyup', this.onKey);
+    window.addEventListener('blur', this.clearKeys);
+  },
+  remove: function () {
+    this.movement.tick = this.originalTick;
+    window.removeEventListener('keydown', this.onKey); window.removeEventListener('keyup', this.onKey);
+    window.removeEventListener('blur', this.clearKeys);
+  }
+});
+
+// Original synthesized footsteps and ambient harmony; no external audio downloads.
+AFRAME.registerComponent('walk-audio', {
+  init: function () {
+    this.position = new AFRAME.THREE.Vector3(); this.previous = new AFRAME.THREE.Vector3();
+    this.distance = 0; this.hasPosition = false; this.muted = false;
+    this.unlock = () => {
+      try {
+        if (!this.context) this.createAudio();
+        if (!document.hidden) this.context.resume().catch(() => {});
+      } catch (error) { console.warn('Audio unavailable:', error.message); }
+    };
+    this.visibility = () => { this.hasPosition = false; if (document.hidden) this.context?.suspend(); else if (this.context) this.context.resume().catch(() => {}); };
+    this.onThird = () => { this.musicActive = true; this.nextChord = 0; this.bar = 0; };
+    window.addEventListener('pointerdown', this.unlock); window.addEventListener('keydown', this.unlock);
+    document.addEventListener('visibilitychange', this.visibility);
+    this.el.addEventListener('stage-three-start', this.onThird);
+    this.button = document.createElement('button'); this.button.textContent = 'Sound: on';
+    this.button.setAttribute('aria-label', 'Mute footsteps and music');
+    this.button.style.cssText='position:fixed;bottom:18px;right:85px;z-index:1200;border:1px solid #d9b65e;border-radius:8px;padding:8px 12px;background:#102142e8;color:#fff0c2;cursor:pointer;font:14px Arial';
+    this.button.onclick = () => {
+      this.unlock(); this.muted = !this.muted;
+      if(this.context) this.master.gain.setTargetAtTime(this.muted ? 0 : 0.55,this.context.currentTime,0.08);
+      this.button.textContent = this.muted ? 'Sound: off' : 'Sound: on';
+      this.button.setAttribute('aria-label',this.muted ? 'Enable footsteps and music' : 'Mute footsteps and music');this.button.blur();
+    };
+    document.body.appendChild(this.button);
+  },
+  createAudio: function () {
+    this.context = new (window.AudioContext || window.webkitAudioContext)();
+    const c=this.context;this.master=c.createGain();this.master.gain.value=this.muted?0:0.55;this.master.connect(c.destination);
+    this.noise=c.createBuffer(1,Math.floor(c.sampleRate*.18),c.sampleRate);
+    const samples=this.noise.getChannelData(0);for(let i=0;i<samples.length;i++)samples[i]=Math.random()*2-1;
+  },
+  step: function () {
+    const c=this.context,t=c.currentTime;
+    const noise=c.createBufferSource(),filter=c.createBiquadFilter(),gain=c.createGain();
+    noise.buffer=this.noise;filter.type='lowpass';filter.frequency.value=650+Math.random()*350;
+    gain.gain.setValueAtTime(0,t);gain.gain.linearRampToValueAtTime(.19,t+.008);gain.gain.exponentialRampToValueAtTime(.001,t+.16);
+    noise.connect(filter);filter.connect(gain);gain.connect(this.master);noise.start(t);noise.stop(t+.18);
+    noise.onended=()=>{noise.disconnect();filter.disconnect();gain.disconnect();};
+    const thud=c.createOscillator(),body=c.createGain();thud.frequency.setValueAtTime(105,t);thud.frequency.exponentialRampToValueAtTime(55,t+.12);
+    body.gain.setValueAtTime(.12,t);body.gain.exponentialRampToValueAtTime(.001,t+.14);thud.connect(body);body.connect(this.master);thud.start(t);thud.stop(t+.16);
+    thud.onended=()=>{thud.disconnect();body.disconnect();};
+  },
+  chord: function (time) {
+    const progression=[[48,55,59,64],[45,52,55,60],[41,48,52,57],[43,50,55,60]];
+    for (const [i,midi] of progression[this.bar++%4].entries()) {
+      const c=this.context,osc=c.createOscillator(),gain=c.createGain();osc.type='sine';osc.frequency.value=440*Math.pow(2,(midi-69)/12);
+      const start=time+i*.18;gain.gain.setValueAtTime(0,start);gain.gain.linearRampToValueAtTime(.045,start+1.8);gain.gain.linearRampToValueAtTime(0,start+7.5);
+      osc.connect(gain);gain.connect(this.master);osc.start(start);osc.stop(start+7.6);osc.onended=()=>{osc.disconnect();gain.disconnect();};
+    }
+  },
+  tick: function () {
+    const camera=document.querySelector('#camera');if(!camera)return;
+    camera.object3D.updateWorldMatrix(true,false);camera.object3D.getWorldPosition(this.position);
+    const travelled=this.hasPosition?Math.hypot(this.position.x-this.previous.x,this.position.z-this.previous.z):0;
+    this.previous.copy(this.position);this.hasPosition=true;
+    const walking=travelled<=1&&camera.getAttribute('wasd-controls').enabled;
+    if(!walking)this.distance=0;
+    if(!this.context||this.context.state!=='running')return;
+    if(walking&&travelled>.001){this.distance+=travelled;if(this.distance>=.8){this.distance%=.8;if(!this.muted)this.step();}}
+    if(this.musicActive&&this.context.currentTime>=this.nextChord){this.chord(this.context.currentTime+.1);this.nextChord=this.context.currentTime+6;}
+  },
+  remove: function () {
+    window.removeEventListener('pointerdown',this.unlock);window.removeEventListener('keydown',this.unlock);
+    document.removeEventListener('visibilitychange',this.visibility);this.el.removeEventListener('stage-three-start',this.onThird);
+    this.button?.remove();this.context?.close();
+  }
+});
