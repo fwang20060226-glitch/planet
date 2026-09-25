@@ -1,0 +1,133 @@
+// A persistent, spatial paint map records the places visited during the third walk.
+AFRAME.registerComponent('third-walk', {
+  init: function () {
+    this.onStart = () => this.start();
+    this.el.sceneEl.addEventListener('stage-three-start', this.onStart);
+    this.onEscape = event => { if (event.code === 'Escape' && this.panel) this.closeReveal(); };
+    window.addEventListener('keydown', this.onEscape);
+  },
+  start: function () {
+    if (this.active) return;
+    const cloud = this.el.components['street-point-cloud'];
+    if (!cloud?.material || !cloud.points) return;
+    const guide = this.el.sceneEl.components['side-view-guide'];
+    if (guide) {
+      guide.active = false; guide.completed = true;
+      guide.marker?.remove(); guide.hud?.remove();
+    }
+    const T = AFRAME.THREE;
+    this.cameraPosition = new T.Vector3();
+    this.width = 128; this.height = 64;
+    this.memory = new Float32Array(this.width * this.height);
+    this.pixels = new Uint8Array(this.width * this.height * 4);
+    this.texture = new T.DataTexture(this.pixels, this.width, this.height, T.RGBAFormat);
+    this.texture.minFilter = T.LinearFilter; this.texture.magFilter = T.LinearFilter;
+    this.texture.generateMipmaps = false; this.texture.needsUpdate = true;
+    this.uniforms = {walkPaint: {value: this.texture}, walkTime: {value: 0}};
+    const previousCompile = cloud.material.onBeforeCompile;
+    cloud.material.onBeforeCompile = shader => {
+      previousCompile(shader);
+      Object.assign(shader.uniforms, this.uniforms);
+      shader.vertexShader = 'uniform sampler2D walkPaint; uniform float walkTime;\n' + shader.vertexShader;
+      shader.vertexShader = shader.vertexShader.replace('#include <color_vertex>', `
+        #include <color_vertex>
+        vec2 paintUV = clamp((position.xz - vec2(-21.0, -2.0)) / vec2(32.0, 18.0), 0.0, 1.0);
+        float painted = texture2D(walkPaint, paintUV).r;
+        float grain = fract(sin(dot(position.xyz, vec3(12.9898, 78.233, 39.425))) * 43758.5453);
+        float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
+        // Warm illuminated facades, cobalt shadows, ochre pavement; retain texture contrast.
+        vec3 gold = mix(vec3(0.55, 0.25, 0.025), vec3(1.0, 0.77, 0.24), clamp(luminance * 2.8, 0.0, 1.0));
+        vec3 blue = mix(vec3(0.012, 0.027, 0.095), vec3(0.075, 0.24, 0.63), clamp(luminance * 3.0, 0.0, 1.0));
+        float warmth = smoothstep(0.055, 0.30, luminance);
+        if (position.y < -1.05) warmth *= 0.65 + 0.25 * grain;
+        vec3 paintedColor = mix(blue, gold, warmth) * (0.8 + grain * 0.2);
+        vColor.rgb = mix(vColor.rgb, paintedColor, painted * 0.9);
+      `);
+      shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', `
+        #include <begin_vertex>
+        // Only a small subset of above-ground points lift; architectural silhouettes stay readable.
+        float lift = step(0.80, grain) * smoothstep(-1.1, -0.6, position.y) * painted;
+        transformed.y += lift * (0.10 + 0.08 * sin(walkTime * 0.7 + grain * 19.0));
+        transformed.x += lift * 0.055 * sin(walkTime * 0.45 + position.y * 2.0);
+        transformed.z += lift * 0.07 * cos(walkTime * 0.55 + position.x);
+      `);
+    };
+    cloud.material.customProgramCacheKey = () => 'street-third-walk-paint-v1';
+    cloud.material.needsUpdate = true;
+    cloud.points.frustumCulled = false;
+    this.active = true;
+  },
+  paintNear: function (x, z, dt) {
+    const radius = 4.5;
+    const minX = Math.max(0, Math.floor((x - radius + 21) / 32 * this.width));
+    const maxX = Math.min(this.width - 1, Math.ceil((x + radius + 21) / 32 * this.width));
+    const minZ = Math.max(0, Math.floor((z - radius + 2) / 18 * this.height));
+    const maxZ = Math.min(this.height - 1, Math.ceil((z + radius + 2) / 18 * this.height));
+    let changed = false;
+    for (let row = minZ; row <= maxZ; row++) for (let col = minX; col <= maxX; col++) {
+      const px = -21 + (col + 0.5) / this.width * 32;
+      const pz = -2 + (row + 0.5) / this.height * 18;
+      const distance = Math.hypot(px - x, pz - z);
+      if (distance >= radius) continue;
+      const index = row * this.width + col;
+      this.memory[index] = Math.min(1, this.memory[index] + dt * 0.7 * (1 - distance / radius));
+      const value = Math.round(this.memory[index] * 255);
+      if (this.pixels[index * 4] !== value) {
+        this.pixels[index * 4] = value; this.pixels[index * 4 + 3] = 255; changed = true;
+      }
+    }
+    if (changed) this.texture.needsUpdate = true;
+  },
+  tick: function (time, delta) {
+    if (!this.active) return;
+    const camera = document.querySelector('#camera')?.object3D;
+    if (!camera) return;
+    camera.updateWorldMatrix(true, false); camera.getWorldPosition(this.cameraPosition);
+    const dt = Math.min(delta || 0, 100) / 1000;
+    this.uniforms.walkTime.value += dt;
+    this.paintNear(this.cameraPosition.x, this.cameraPosition.z, dt);
+    if (!this.revealed && this.cameraPosition.x >= 8.5 && this.cameraPosition.z < 7) this.showReveal();
+  },
+  showReveal: function () {
+    this.revealed = true;
+    const message = document.querySelector('#road-particle-trail')?.components['road-particles']?.message;
+    if (message) message.textContent = 'A familiar street, seen differently.';
+    const camera = document.querySelector('#camera');
+    this.wasEnabled = camera.getAttribute('wasd-controls').enabled !== false;
+    camera.setAttribute('wasd-controls', 'enabled', false);
+    camera.components['wasd-controls']?.velocity?.set(0, 0, 0);
+    this.panel = document.createElement('section');
+    this.panel.setAttribute('role', 'dialog'); this.panel.setAttribute('aria-label', 'The painting behind the colors');
+    this.panel.style.cssText = 'position:fixed;right:3%;top:23%;width:min(360px,90vw);max-height:72vh;overflow:auto;box-sizing:border-box;padding:20px;border:1px solid #D9B65E;border-radius:16px;background:rgba(9,20,38,.97);color:#FFF0C2;z-index:1100;font:16px/1.5 Arial;box-shadow:0 12px 40px #0008';
+    const picture = document.createElement('img');
+    picture.src = 'cafe-terrace-reference.jpg'; picture.alt = 'Vincent van Gogh, Café Terrace at Night, 1888';
+    picture.style.cssText = 'display:block;max-width:100%;height:28vh;object-fit:contain;margin:0 auto 14px';
+    const title = document.createElement('h2'); title.textContent = 'Café Terrace at Night'; title.style.cssText = 'font:600 23px Georgia;margin:8px 0';
+    const author = document.createElement('div'); author.textContent = 'Vincent van Gogh · 1888';
+    const description = document.createElement('p'); description.textContent = 'A street in Columbus, seen through the colors of Van Gogh’s Café Terrace at Night.';
+    const credit = document.createElement('a'); credit.textContent = 'Image: Wikimedia Commons · Public domain';
+    credit.href = 'https://commons.wikimedia.org/wiki/File:Vincent_Willem_van_Gogh_-_Cafe_Terrace_at_Night_(Yorck).jpg';
+    credit.target = '_blank'; credit.rel = 'noopener noreferrer'; credit.style.cssText = 'color:#D9CFAE;font-size:12px';
+    const button = document.createElement('button'); button.textContent = 'Keep exploring';
+    button.style.cssText = 'display:block;margin-top:16px;padding:10px 18px;background:#F2D183;color:#14213A;border:0;border-radius:8px;font:600 16px Arial;cursor:pointer';
+    button.addEventListener('click', () => this.closeReveal());
+    for (const event of ['mousedown', 'pointerdown', 'touchstart', 'wheel']) this.panel.addEventListener(event, e => e.stopPropagation());
+    this.panel.append(picture, title, author, description, credit, button); document.body.appendChild(this.panel); button.focus();
+    this.el.sceneEl.emit('third-walk-complete');
+  },
+  closeReveal: function () {
+    if (!this.panel) return;
+    this.panel.remove(); this.panel = null;
+    const camera = document.querySelector('#camera');
+    const movement = camera?.components['wasd-controls'];
+    if (movement?.keys) movement.keys = {};
+    camera?.setAttribute('wasd-controls', 'enabled', this.wasEnabled);
+    document.activeElement?.blur?.();
+  },
+  remove: function () {
+    this.closeReveal();
+    this.el.sceneEl.removeEventListener('stage-three-start', this.onStart);
+    window.removeEventListener('keydown', this.onEscape);
+    this.texture?.dispose();
+  }
+});
