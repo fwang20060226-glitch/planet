@@ -103,7 +103,7 @@ AFRAME.registerComponent('side-view-guide', {
     this.label = document.createElement('div'); this.label.textContent = 'SIDE VIEW';
     this.hud.append(this.arrow, this.label); document.body.appendChild(this.hud);
   },
-  tick: function () {
+  tick: function (time, delta) {
     if (!this.active || this.completed) return;
     const camera = document.querySelector('#camera')?.object3D;
     if (!camera) return;
@@ -113,11 +113,22 @@ AFRAME.registerComponent('side-view-guide', {
       if (this.player.x < 8.5) return;
       this.showGuide();
     }
-    if (!this.atSide && Math.hypot(this.player.x - this.sidePosition.x, this.player.z - this.sidePosition.z) < 0.65) {
-      this.atSide = true;
-      this.marker.setAttribute('visible', false);
-      if (this.message) this.message.textContent = 'Why not try a different angle?\nTurn toward the street and take in the whole view.\nClick and drag the mouse to look around.';
-      this.label.textContent = 'LOOK ACROSS THE STREET';
+    const insideMarker = Math.hypot(this.player.x - this.sidePosition.x, this.player.z - this.sidePosition.z) < 0.9;
+    if (insideMarker && !document.hidden) {
+      this.dwellMs = (this.dwellMs || 0) + Math.min(delta || 0, 100);
+      if (this.dwellMs < 2000) return;
+      const trail = document.querySelector('#road-particle-trail')?.components['road-particles'];
+      if (!trail?.enterThirdStage()) return;
+      this.completed = true;
+      this.active = false;
+      this.clearGuide();
+      this.el.sceneEl.emit('side-view-reached');
+      return;
+    }
+    if (this.dwellMs) {
+      this.dwellMs = 0;
+      this.label.textContent = 'SIDE VIEW';
+      if (this.message) this.message.textContent = 'Why not try a different angle?\nFollow the golden marker.\nClick and drag the mouse to look around.';
     }
     this.direction.copy(this.atSide ? this.streetFocus : this.sidePosition).sub(this.player);
     this.direction.y = 0; this.direction.normalize();
@@ -125,14 +136,16 @@ AFRAME.registerComponent('side-view-guide', {
     this.right.crossVectors(this.forward, this.up).normalize();
     const angle = Math.atan2(this.direction.dot(this.right), this.direction.dot(this.forward));
     this.arrow.style.transform = 'rotate(' + angle * 180 / Math.PI + 'deg)';
-    if (this.atSide && Math.abs(angle) < 0.25) {
-      this.completed = true; this.hud.remove();
-      if (this.message) this.message.textContent = 'Why not try a different angle?\nTake a moment to look around.\nClick and drag the mouse to change your view.';
-      this.el.sceneEl.emit('side-view-reached');
-    }
+
+  },
+  // A-Frame entity.remove() is not safe to call twice on a detached entity.
+  clearGuide: function () {
+    if (this.marker?.parentNode) this.marker.remove();
+    this.hud?.remove();
+    this.marker = null; this.hud = null;
   },
   remove: function () {
     this.el.sceneEl.removeEventListener('stage-two-start', this.onSecondStage);
-    this.marker?.remove(); this.hud?.remove();
+    this.clearGuide();
   }
 });
