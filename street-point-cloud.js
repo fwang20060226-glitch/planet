@@ -68,6 +68,21 @@ AFRAME.registerComponent('side-view-guide', {
     this.streetFocus = new T.Vector3(-4.5, 0.45, 1);
     this.onSecondStage = () => { this.active = true; };
     this.el.sceneEl.addEventListener('stage-two-start', this.onSecondStage);
+    this.onContinueKey = event => {
+      if (event.code !== 'Space' || event.repeat || !this.active || this.completed || !this.prompted || document.hidden) return;
+      if (event.target?.isContentEditable || /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(event.target?.tagName || '')) return;
+      const camera = document.querySelector('#camera')?.object3D;
+      if (!camera) return;
+      camera.updateWorldMatrix(true, false); camera.getWorldPosition(this.player);
+      if (Math.hypot(this.player.x - this.sidePosition.x, this.player.z - this.sidePosition.z) >= 0.9) return;
+      event.preventDefault();
+      const trail = document.querySelector('#road-particle-trail')?.components['road-particles'];
+      if (!trail?.enterThirdStage()) return;
+      this.completed = true; this.active = false;
+      this.clearGuide();
+      this.el.sceneEl.emit('side-view-reached');
+    };
+    window.addEventListener('keydown', this.onContinueKey);
   },
   showGuide: function () {
     this.prompted = true;
@@ -114,19 +129,14 @@ AFRAME.registerComponent('side-view-guide', {
       this.showGuide();
     }
     const insideMarker = Math.hypot(this.player.x - this.sidePosition.x, this.player.z - this.sidePosition.z) < 0.9;
-    if (insideMarker && !document.hidden) {
-      this.dwellMs = (this.dwellMs || 0) + Math.min(delta || 0, 100);
-      if (this.dwellMs < 2000) return;
-      const trail = document.querySelector('#road-particle-trail')?.components['road-particles'];
-      if (!trail?.enterThirdStage()) return;
-      this.completed = true;
-      this.active = false;
-      this.clearGuide();
-      this.el.sceneEl.emit('side-view-reached');
+    if (insideMarker) {
+      this.atMarker = true;
+      this.label.textContent = 'PRESS SPACE TO CONTINUE';
+      if (this.message) this.message.textContent = 'Take a moment to look around.\nPress SPACE to begin the third walk.';
       return;
     }
-    if (this.dwellMs) {
-      this.dwellMs = 0;
+    if (this.atMarker) {
+      this.atMarker = false;
       this.label.textContent = 'SIDE VIEW';
       if (this.message) this.message.textContent = 'Why not try a different angle?\nFollow the golden marker.\nClick and drag the mouse to look around.';
     }
@@ -146,6 +156,7 @@ AFRAME.registerComponent('side-view-guide', {
   },
   remove: function () {
     this.el.sceneEl.removeEventListener('stage-two-start', this.onSecondStage);
+    window.removeEventListener('keydown', this.onContinueKey);
     this.clearGuide();
   }
 });
