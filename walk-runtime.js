@@ -29,19 +29,19 @@ AFRAME.registerComponent('steady-walk', {
   }
 });
 
-// Original synthesized footsteps and ambient harmony; no external audio downloads.
+// Soft synthesized footsteps; Reverie by Scott Buckley (CC BY 4.0).
 AFRAME.registerComponent('walk-audio', {
   init: function () {
     this.position = new AFRAME.THREE.Vector3(); this.previous = new AFRAME.THREE.Vector3();
-    this.distance = 0; this.hasPosition = false; this.muted = false;
+    this.distance = 0; this.stride = 0.75; this.hasPosition = false; this.muted = false;
     this.unlock = () => {
       try {
         if (!this.context) this.createAudio();
-        if (!document.hidden) this.context.resume().catch(() => {});
+        if (!document.hidden) { this.context.resume().catch(() => {}); this.playMusic(); }
       } catch (error) { console.warn('Audio unavailable:', error.message); }
     };
-    this.visibility = () => { this.hasPosition = false; if (document.hidden) this.context?.suspend(); else if (this.context) this.context.resume().catch(() => {}); };
-    this.onThird = () => { this.musicActive = true; this.nextChord = 0; this.bar = 0; };
+    this.visibility = () => { this.hasPosition = false; if (document.hidden) { this.music?.pause(); this.context?.suspend().catch(() => {}); } else if (this.context) this.unlock(); };
+    this.onThird = () => { this.musicActive = true; this.unlock(); };
     window.addEventListener('pointerdown', this.unlock); window.addEventListener('keydown', this.unlock);
     document.addEventListener('visibilitychange', this.visibility);
     this.el.addEventListener('stage-three-start', this.onThird);
@@ -61,6 +61,17 @@ AFRAME.registerComponent('walk-audio', {
     const c=this.context;this.master=c.createGain();this.master.gain.value=this.muted?0:0.55;this.master.connect(c.destination);
     this.noise=c.createBuffer(1,Math.floor(c.sampleRate),c.sampleRate);
     const samples=this.noise.getChannelData(0);for(let i=0;i<samples.length;i++)samples[i]=Math.random()*2-1;
+    this.music = new Audio('sb_reverie.mp3'); this.music.loop = true; this.music.preload = 'auto';
+    this.musicGain = c.createGain(); this.musicGain.gain.value = 0;
+    this.musicSource = c.createMediaElementSource(this.music);
+    this.musicSource.connect(this.musicGain); this.musicGain.connect(this.master);
+    this.music.addEventListener('playing', () => {
+      if (this.musicFadedIn) return;
+      this.musicFadedIn = true;
+      this.musicGain.gain.setValueAtTime(0, c.currentTime);
+      this.musicGain.gain.linearRampToValueAtTime(0.3, c.currentTime + 5);
+    });
+    this.music.addEventListener('error', () => console.warn('Reverie could not be loaded; walking remains available.'));
   },
   step: function () {
     const c = this.context, t = c.currentTime;
@@ -68,8 +79,8 @@ AFRAME.registerComponent('walk-audio', {
     // Soft heel contact followed by a quieter sole brushing the pavement.
     // Filtered noise avoids the pitched, drum-like knock of an oscillator.
     const layers = [
-      {delay: 0, duration: 0.17, frequency: 170 + Math.random() * 70, volume: 0.075},
-      {delay: 0.035, duration: 0.20, frequency: 550 + Math.random() * 200, volume: 0.038}
+      {delay: 0, duration: 0.23, frequency: 140 + Math.random() * 60, volume: 0.018},
+      {delay: 0.05, duration: 0.26, frequency: 380 + Math.random() * 140, volume: 0.012}
     ];
     for (const layer of layers) {
       const source = c.createBufferSource(), filter = c.createBiquadFilter(), gain = c.createGain();
@@ -78,7 +89,7 @@ AFRAME.registerComponent('walk-audio', {
       source.playbackRate.value = 0.9 + Math.random() * 0.2;
       filter.type = 'lowpass'; filter.Q.value = 0.55; filter.frequency.value = layer.frequency;
       gain.gain.setValueAtTime(0, start);
-      gain.gain.linearRampToValueAtTime(layer.volume * strength, start + 0.018);
+      gain.gain.linearRampToValueAtTime(layer.volume * strength, start + 0.045);
       gain.gain.exponentialRampToValueAtTime(0.0001, start + layer.duration - 0.02);
       gain.gain.linearRampToValueAtTime(0, start + layer.duration);
       source.connect(filter); filter.connect(gain); gain.connect(this.master);
@@ -86,13 +97,12 @@ AFRAME.registerComponent('walk-audio', {
       source.onended = () => { source.disconnect(); filter.disconnect(); gain.disconnect(); };
     }
   },
-  chord: function (time) {
-    const progression=[[48,55,59,64],[45,52,55,60],[41,48,52,57],[43,50,55,60]];
-    for (const [i,midi] of progression[this.bar++%4].entries()) {
-      const c=this.context,osc=c.createOscillator(),gain=c.createGain();osc.type='sine';osc.frequency.value=440*Math.pow(2,(midi-69)/12);
-      const start=time+i*.18;gain.gain.setValueAtTime(0,start);gain.gain.linearRampToValueAtTime(.045,start+1.8);gain.gain.linearRampToValueAtTime(0,start+7.5);
-      osc.connect(gain);gain.connect(this.master);osc.start(start);osc.stop(start+7.6);osc.onended=()=>{osc.disconnect();gain.disconnect();};
-    }
+  playMusic: function () {
+    if (!this.musicActive || !this.music || document.hidden || !this.music.paused || this.musicPending) return;
+    this.musicPending = true;
+    this.music.play().catch(() => {
+      // If autoplay was blocked, the next click or key retries without blocking movement.
+    }).finally(() => { this.musicPending = false; });
   },
   tick: function () {
     const camera=document.querySelector('#camera');if(!camera)return;
@@ -102,12 +112,14 @@ AFRAME.registerComponent('walk-audio', {
     const walking=travelled<=1&&camera.getAttribute('wasd-controls').enabled;
     if(!walking)this.distance=0;
     if(!this.context||this.context.state!=='running')return;
-    if(walking&&travelled>.001){this.distance+=travelled;if(this.distance>=.8){this.distance%=.8;if(!this.muted)this.step();}}
-    if(this.musicActive&&this.context.currentTime>=this.nextChord){this.chord(this.context.currentTime+.1);this.nextChord=this.context.currentTime+6;}
+    if(walking&&travelled>.001){this.distance+=travelled;if(this.distance>=this.stride){this.distance%=this.stride;this.stride=0.68+Math.random()*0.14;if(!this.muted)this.step();}}
+
   },
   remove: function () {
     window.removeEventListener('pointerdown',this.unlock);window.removeEventListener('keydown',this.unlock);
     document.removeEventListener('visibilitychange',this.visibility);this.el.removeEventListener('stage-three-start',this.onThird);
+    this.music?.pause(); this.music?.removeAttribute('src'); this.music?.load();
+    this.musicSource?.disconnect(); this.musicGain?.disconnect();
     this.button?.remove();this.context?.close();
   }
 });
