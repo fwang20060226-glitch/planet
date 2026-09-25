@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Street Walk</title>
   <script src="https://aframe.io/releases/1.8.0/aframe.min.js"></script>
-  <script src="street-point-cloud.js"></script>
+  <script src="street-point-cloud.js?v=20260924"></script>
+  <script src="third-walk.js?v=20260924-soft"></script>
+  <script src="walk-runtime.js?v=20260924-soft"></script>
   <script>
 // Template structure: obstacles register themselves; the player handles blocking.
 AFRAME.registerComponent('obstacle', {
@@ -109,7 +111,8 @@ AFRAME.registerComponent('simple-collider', {
       };
     });
     const wallCorrected = slideAlongWalls(this.previous, this.world, boxes);
-    const secondStage = document.querySelector('#road-particle-trail')?.components['road-particles']?.stage === 'second';
+    const stage = document.querySelector('#road-particle-trail')?.components['road-particles']?.stage;
+    const secondStage = stage === 'second' || stage === 'third';
     const corrected = slideWithinScan(this.previous, wallCorrected, secondStage);
     this.world.x = corrected.x;
     this.world.z = corrected.z;
@@ -426,6 +429,36 @@ AFRAME.registerComponent('simple-collider', {
       this.el.sceneEl.emit('stage-two-start');
     },
 
+    enterThirdStage: function () {
+      if (this.stage !== 'second') return false;
+      const camera = document.querySelector('#camera');
+      const rig = document.querySelector('#rig');
+      if (!camera || !rig) return false;
+      this.stage = 'third';
+      rig.setAttribute('position', this.startPose.rigPosition);
+      rig.setAttribute('rotation', this.startPose.rigRotation);
+      camera.setAttribute('position', this.startPose.cameraPosition);
+      camera.setAttribute('rotation', '0 0 0');
+      const look = camera.components['look-controls'];
+      if (look?.yawObject) look.yawObject.rotation.y = 0;
+      if (look?.pitchObject) look.pitchObject.rotation.x = 0;
+      const movement = camera.components['wasd-controls'];
+      movement?.velocity?.set(0, 0, 0);
+      // Keep physically held movement keys across this automatic transition.
+      // Teleportation must not be treated as walking across the collision map.
+      const collider = camera.components['simple-collider'];
+      if (collider) collider.hasPreviousPosition = false;
+      rig.object3D.updateWorldMatrix(true, true);
+      camera.setAttribute('wasd-controls', 'enabled', true);
+      camera.setAttribute('look-controls', 'enabled', true);
+      // A-Frame accepts walking keys only when the document body owns focus.
+      document.activeElement?.blur?.();
+      this.message.textContent = 'Does this scene remind you of anything?\nTake your time. Explore the whole street.\nLook around and watch the colors change as you walk.';
+      this.message.style.top = '12%';
+      this.el.sceneEl.emit('stage-three-start');
+      return true;
+    },
+
     remove: function () {
       window.removeEventListener('keydown', this.onContinueKey);
       this.el.removeObject3D('particles');
@@ -438,11 +471,11 @@ AFRAME.registerComponent('simple-collider', {
 </script>
 </head>
 <body>
-  <a-scene side-view-guide background="color: #091426" fog="type: linear; color: #091426; near: 8; far: 65">
+  <a-scene walk-audio side-view-guide background="color: #091426" fog="type: linear; color: #091426; near: 8; far: 65">
     <a-assets>
       <a-asset-item id="road" src="road2.glb"></a-asset-item>
     </a-assets>
-    <a-entity id="street-model" gltf-model="#road" street-point-cloud></a-entity>
+    <a-entity id="street-model" gltf-model="#road" street-point-cloud third-walk></a-entity>
 
     <a-entity light="type: hemisphere; color: #A2BDEB; groundColor: #94764B; intensity: 0.85"></a-entity>
     <a-entity light="type: directional; color: #86A9E3; intensity: 0.45" position="-3 8 5"></a-entity>
@@ -452,7 +485,7 @@ AFRAME.registerComponent('simple-collider', {
 <!-- Preserved starting position and direction. -->
     <a-entity id="rig" position="-9 0.05 12" rotation="0 -90 0">
       <a-camera id="camera" position="-10 0.45 10"
-        wasd-controls="acceleration: 12" look-controls simple-collider="radius: 0.1"></a-camera>
+        wasd-controls="acceleration: 12" steady-walk look-controls simple-collider="radius: 0.1"></a-camera>
     </a-entity>
 
     <!-- The scanned model ends near X=10.75; particles stop at X=9. -->
