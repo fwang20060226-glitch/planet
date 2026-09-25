@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Street Walk</title>
   <script src="https://aframe.io/releases/1.8.0/aframe.min.js"></script>
-  <script src="street-point-cloud.js?v=20260924"></script>
-  <script src="third-walk.js?v=20260924-soft"></script>
-  <script src="walk-runtime.js?v=20260924-soft"></script>
+  <script src="street-point-cloud.js?v=cozy-space-1"></script>
+  <script src="third-walk.js?v=reverie-1"></script>
+  <script src="walk-runtime.js?v=reverie-1"></script>
   <script>
 // Template structure: obstacles register themselves; the player handles blocking.
 AFRAME.registerComponent('obstacle', {
@@ -485,7 +485,7 @@ AFRAME.registerComponent('simple-collider', {
 <!-- Preserved starting position and direction. -->
     <a-entity id="rig" position="-9 0.05 12" rotation="0 -90 0">
       <a-camera id="camera" position="-10 0.45 10"
-        wasd-controls="acceleration: 12" steady-walk look-controls simple-collider="radius: 0.1"></a-camera>
+        wasd-controls="acceleration: 8" steady-walk look-controls simple-collider="radius: 0.1"></a-camera>
     </a-entity>
 
     <!-- The scanned model ends near X=10.75; particles stop at X=9. -->
