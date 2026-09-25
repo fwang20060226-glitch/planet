@@ -112,7 +112,16 @@ AFRAME.registerComponent('third-walk', {
     button.style.cssText = 'display:block;margin-top:16px;padding:10px 18px;background:#F2D183;color:#14213A;border:0;border-radius:8px;font:600 16px Arial;cursor:pointer';
     button.addEventListener('click', () => this.closeReveal());
     for (const event of ['mousedown', 'pointerdown', 'touchstart', 'wheel']) this.panel.addEventListener(event, e => e.stopPropagation());
-    this.panel.append(picture, title, author, description, credit, button); document.body.appendChild(this.panel); button.focus();
+    const musicCredit = document.createElement('p');
+    musicCredit.style.cssText = 'font-size:12px;color:#D9CFAE';
+    const musicLink = document.createElement('a'); musicLink.textContent = '“Reverie” by Scott Buckley';
+    musicLink.href = 'https://www.scottbuckley.com.au/library/reverie/';
+    musicLink.target = '_blank'; musicLink.rel = 'noopener noreferrer'; musicLink.style.color = 'inherit';
+    const licenseLink = document.createElement('a'); licenseLink.textContent = 'CC BY 4.0';
+    licenseLink.href = 'https://creativecommons.org/licenses/by/4.0/';
+    licenseLink.target = '_blank'; licenseLink.rel = 'noopener noreferrer'; licenseLink.style.color = 'inherit';
+    musicCredit.append(musicLink, ' · ', licenseLink, ' · Volume reduced; fade-in added.');
+    this.panel.append(picture, title, author, description, credit, musicCredit, button); document.body.appendChild(this.panel); button.focus();
     this.el.sceneEl.emit('third-walk-complete');
   },
   closeReveal: function () {
